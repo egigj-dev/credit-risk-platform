@@ -1,0 +1,561 @@
+-- ============================================================
+-- Credit Risk PD Model — Power BI Setup
+-- Data Science Division | Bank | April 2026
+-- ============================================================
+-- This file contains:
+--   PART A — Connection setup instructions
+--   PART B — DAX measures (paste into Power BI DAX editor)
+--   PART C — Dashboard page specifications
+-- ============================================================
+
+
+/* ============================================================
+   PART A — CONNECTION SETUP
+   ============================================================
+   Step 1: Open Power BI Desktop → Get Data → SQL Server
+
+   Step 2: Add TWO connections to CreditRiskDB:
+
+   CONNECTION 1  — Import  (refreshes daily at 06:00)
+   ┌──────────────────────────────────────────────────────────┐
+   │ Server:   YOUR_SERVER_NAME                               │
+   │ Database: CreditRiskDB                                   │
+   │ Mode:     Import                                         │
+   │ Tables/Views to import:                                  │
+   │   rpt.vw_PortfolioRiskSummary  → fact_PDScores          │
+   │   rpt.vw_ScoreDistribution     → fact_ScoreDist         │
+   │   rpt.vw_GlobalSHAPImportance  → fact_GlobalSHAP        │
+   │   rpt.vw_ModelHealth           → mon_ModelHealth        │
+   │   rpt.vw_PSITrend              → mon_PSITrend           │
+   │   dbo.Clients                  → dim_Client             │
+   └──────────────────────────────────────────────────────────┘
+
+   CONNECTION 2  — DirectQuery  (always live — loan lookup)
+   ┌──────────────────────────────────────────────────────────┐
+   │ Server:   YOUR_SERVER_NAME                               │
+   │ Database: CreditRiskDB                                   │
+   │ Mode:     DirectQuery                                    │
+   │ Table:    rpt.vw_ApplicationDetail → dim_AppDetail       │
+   └──────────────────────────────────────────────────────────┘
+
+   Step 3: Create dim_Date (calculated table — no DB needed)
+   In Power BI → Modelling → New Table → paste DAX below.
+
+   Step 4: Set all relationships (Manage Relationships):
+     fact_PDScores[ClientID]      → dim_Client[ClientID]         (N:1)
+     fact_PDScores[ScoreDate]     → dim_Date[Date]               (N:1)
+     fact_PDScores[ApplicationID] → dim_AppDetail[ApplicationID] (1:1, DQ)
+     fact_GlobalSHAP[ScoreDate]   → dim_Date[Date]               (N:1)
+     mon_PSITrend[MonitorDate]    → dim_Date[Date]               (N:1)
+     mon_ModelHealth[CycleDate]   → dim_Date[Date]               (N:1)
+
+   Step 5: Set scheduled refresh in Power BI Service:
+     Daily at 06:00  (after nightly ETL completes by ~04:30)
+   ============================================================ */
+
+
+/* ============================================================
+   PART B — DAX MEASURES
+   In Power BI Desktop: select a table → New Measure → paste.
+   All measures go in the _Measures table unless noted.
+   ============================================================ */
+
+
+-- ── TABLE: dim_Date (Calculated Table) ───────────────────────────
+-- Paste in Modelling → New Table
+
+dim_Date =
+ADDCOLUMNS(
+    CALENDAR( DATE(2020,1,1), DATE(2030,12,31) ),
+    "Year",         YEAR([Date]),
+    "Quarter",      "Q" & QUARTER([Date]),
+    "Month",        MONTH([Date]),
+    "MonthName",    FORMAT([Date], "MMM YYYY"),
+    "MonthSort",    YEAR([Date]) * 100 + MONTH([Date]),
+    "Weekday",      WEEKDAY([Date], 2),
+    "IsWeekend",    IF(WEEKDAY([Date], 2) >= 6, TRUE, FALSE),
+    "IsWorkday",    IF(WEEKDAY([Date], 2) <= 5, TRUE, FALSE)
+)
+
+
+-- ══════════════════════════════════════════════════════════════
+-- MEASURE GROUP 1 — Portfolio Overview
+-- Table: fact_PDScores
+-- ══════════════════════════════════════════════════════════════
+
+Total Applications =
+COUNTROWS(fact_PDScores)
+
+
+Avg PD Score =
+AVERAGE(fact_PDScores[AvgPD_Score])
+
+
+Mean PD % =
+FORMAT([Avg PD Score], "0.00%")
+
+
+Total Exposure (ALL) =
+SUM(fact_PDScores[TotalExposure])
+
+
+High Risk Count =
+CALCULATE(
+    COUNTROWS(fact_PDScores),
+    fact_PDScores[RiskTier] = "HIGH"
+)
+
+
+Medium Risk Count =
+CALCULATE(
+    COUNTROWS(fact_PDScores),
+    fact_PDScores[RiskTier] = "MEDIUM"
+)
+
+
+Low Risk Count =
+CALCULATE(
+    COUNTROWS(fact_PDScores),
+    fact_PDScores[RiskTier] = "LOW"
+)
+
+
+High Risk % =
+DIVIDE( [High Risk Count], [Total Applications], 0 )
+
+
+High Risk % Label =
+FORMAT([High Risk %], "0.0%")
+
+
+-- Expected default count given current scores
+-- Multiply mean PD by loan count as a provisioning estimate
+Expected Defaults =
+SUMX(
+    fact_PDScores,
+    fact_PDScores[AvgPD_Score] * fact_PDScores[LoanCount]
+)
+
+
+-- Estimated provision (PD × Exposure × LGD)
+-- LGD assumption: 42% — update variable to match internal policy
+Estimated Provision (EUR) =
+VAR LGD = 0.42
+RETURN
+SUMX(
+    fact_PDScores,
+    fact_PDScores[AvgPD_Score]
+        * fact_PDScores[TotalExposure]
+        * LGD
+)
+
+
+-- ══════════════════════════════════════════════════════════════
+-- MEASURE GROUP 2 — Trend & Period Comparison
+-- ══════════════════════════════════════════════════════════════
+
+-- Average PD for the same period last month
+Avg PD Score LM =
+CALCULATE(
+    [Avg PD Score],
+    DATEADD(dim_Date[Date], -1, MONTH)
+)
+
+
+-- Month-on-month change in average PD
+PD Score MoM Change =
+[Avg PD Score] - [Avg PD Score LM]
+
+
+PD Score MoM % =
+DIVIDE( [PD Score MoM Change], [Avg PD Score LM], BLANK() )
+
+
+PD MoM Arrow =
+VAR chg = [PD Score MoM Change]
+RETURN
+    SWITCH(
+        TRUE(),
+        chg >  0.005, "▲ " & FORMAT(chg, "+0.000"),
+        chg < -0.005, "▼ " & FORMAT(chg, "0.000"),
+        "─ Stable"
+    )
+
+
+-- Rolling 30-day average PD  (smoothed trend line)
+PD Score 30d Avg =
+CALCULATE(
+    AVERAGE(fact_PDScores[AvgPD_Score]),
+    DATESINPERIOD(dim_Date[Date], LASTDATE(dim_Date[Date]), -30, DAY)
+)
+
+
+High Risk Count LM =
+CALCULATE(
+    [High Risk Count],
+    DATEADD(dim_Date[Date], -1, MONTH)
+)
+
+
+High Risk Count Change =
+[High Risk Count] - [High Risk Count LM]
+
+
+-- ══════════════════════════════════════════════════════════════
+-- MEASURE GROUP 3 — PSI Monitoring
+-- Table: mon_PSITrend
+-- ══════════════════════════════════════════════════════════════
+
+Latest PSI Score =
+CALCULATE(
+    MAX(mon_PSITrend[PSI_Score]),
+    LASTDATE(mon_PSITrend[MonitorDate])
+)
+
+
+Latest PSI Status =
+CALCULATE(
+    LASTNONBLANK(mon_PSITrend[PSI_Status], 1),
+    LASTDATE(mon_PSITrend[MonitorDate])
+)
+
+
+PSI Status Label =
+VAR s = [Latest PSI Status]
+RETURN
+    SWITCH(
+        s,
+        "OK",      "✓  Stable",
+        "MONITOR", "⚠  Monitor",
+        "RETRAIN", "✗  Retrain needed",
+        "—"
+    )
+
+
+PSI Traffic Light =
+-- Returns a hex colour for a conditional format card
+VAR s = [Latest PSI Status]
+RETURN
+    SWITCH(
+        s,
+        "OK",      "#27500A",   -- green
+        "MONITOR", "#633806",   -- amber
+        "RETRAIN", "#791F1F",   -- red
+        "#666666"               -- grey (no data)
+    )
+
+
+PSI Breach Count =
+CALCULATE(
+    COUNTROWS(mon_PSITrend),
+    mon_PSITrend[PSI_Status] IN {"MONITOR","RETRAIN"}
+)
+
+
+-- ══════════════════════════════════════════════════════════════
+-- MEASURE GROUP 4 — Model Health (MLOps)
+-- Table: mon_ModelHealth
+-- ══════════════════════════════════════════════════════════════
+
+Latest Champion AUC =
+CALCULATE(
+    MAX(mon_ModelHealth[ChampionAUC]),
+    LASTDATE(mon_ModelHealth[CycleDate])
+)
+
+
+Latest Gini =
+CALCULATE(
+    MAX(mon_ModelHealth[ChampionGini]),
+    LASTDATE(mon_ModelHealth[CycleDate])
+)
+
+
+Latest KS =
+CALCULATE(
+    MAX(mon_ModelHealth[ChampionKS]),
+    LASTDATE(mon_ModelHealth[CycleDate])
+)
+
+
+AUC vs Basel Minimum =
+-- Basel II IRB minimum Gini = 0.40  →  AUC = 0.70
+VAR gini = [Latest Gini]
+VAR Basel_Min = 0.40
+RETURN
+    IF(
+        gini >= Basel_Min,
+        "✓  " & FORMAT(gini, "0.000") & "  (min " & FORMAT(Basel_Min, "0.00") & ")",
+        "✗  BELOW MINIMUM: " & FORMAT(gini, "0.000")
+    )
+
+
+Total Champion Promotions =
+CALCULATE(
+    COUNTROWS(mon_ModelHealth),
+    mon_ModelHealth[Promoted] = TRUE
+)
+
+
+Last Promotion Date =
+CALCULATE(
+    MAX(mon_ModelHealth[CycleDate]),
+    mon_ModelHealth[Promoted] = TRUE
+)
+
+
+Days Since Last Retrain =
+DATEDIFF( [Last Promotion Date], TODAY(), DAY )
+
+
+-- AUC trend: difference from first to latest cycle
+AUC Trend =
+VAR first_auc =
+    CALCULATE(
+        MIN(mon_ModelHealth[ChampionAUC]),
+        TOPN(1, mon_ModelHealth, mon_ModelHealth[CycleDate], ASC)
+    )
+VAR latest_auc = [Latest Champion AUC]
+RETURN latest_auc - first_auc
+
+
+-- ══════════════════════════════════════════════════════════════
+-- MEASURE GROUP 5 — Application Lookup (Page 2, DirectQuery)
+-- Table: dim_AppDetail
+-- ══════════════════════════════════════════════════════════════
+
+Selected PD Score =
+IF(
+    HASONEVALUE(dim_AppDetail[ApplicationID]),
+    MAX(dim_AppDetail[PD_Score]),
+    BLANK()
+)
+
+
+Selected Risk Tier =
+IF(
+    HASONEVALUE(dim_AppDetail[ApplicationID]),
+    MAX(dim_AppDetail[RiskTier]),
+    BLANK()
+)
+
+
+Selected Score Label =
+VAR score = [Selected PD Score]
+VAR tier  = [Selected Risk Tier]
+RETURN
+    IF(
+        NOT ISBLANK(score),
+        FORMAT(score, "0.00%") & "  —  " & tier,
+        "Enter an Application ID above"
+    )
+
+
+-- Decision recommendation based on PD score
+Decision Recommendation =
+VAR score = [Selected PD Score]
+RETURN
+    SWITCH(
+        TRUE(),
+        ISBLANK(score),       "—",
+        score < 0.05,         "✓  Approve — Low Risk",
+        score < 0.08,         "✓  Approve — Acceptable",
+        score < 0.15,         "⚠  Review — Borderline",
+        score < 0.25,         "⚠  Escalate — Elevated Risk",
+        "✗  Decline — High Risk"
+    )
+
+
+-- Risk colour for conditional formatting on the score card
+Score Card Colour =
+VAR score = [Selected PD Score]
+RETURN
+    SWITCH(
+        TRUE(),
+        ISBLANK(score),  "#9CA3AF",
+        score < 0.08,    "#27500A",   -- green
+        score < 0.20,    "#633806",   -- amber
+        "#791F1F"                     -- red
+
+
+-- ══════════════════════════════════════════════════════════════
+-- MEASURE GROUP 6 — SHAP Feature Importance (Page 3)
+-- Table: fact_GlobalSHAP
+-- ══════════════════════════════════════════════════════════════
+
+Top Feature =
+CALCULATE(
+    MAX(fact_GlobalSHAP[FeatureName]),
+    TOPN(1, fact_GlobalSHAP, fact_GlobalSHAP[MeanAbsSHAP], DESC)
+)
+
+
+Top Feature SHAP =
+CALCULATE(
+    MAX(fact_GlobalSHAP[MeanAbsSHAP]),
+    TOPN(1, fact_GlobalSHAP, fact_GlobalSHAP[MeanAbsSHAP], DESC)
+)
+
+
+Feature Impact Direction =
+-- Positive MeanSHAP = feature pushes toward default on average
+IF(
+    MAX(fact_GlobalSHAP[MeanSHAP]) > 0,
+    "↑ Increases default risk",
+    "↓ Decreases default risk"
+)
+
+
+/* ============================================================
+   PART C — DASHBOARD PAGE SPECIFICATIONS
+   ============================================================
+
+   PAGE 1 — PORTFOLIO RISK OVERVIEW
+   Connection mode: Import  |  Refresh: daily 06:00
+   ┌──────────────────────────────────────────────────────────┐
+   │ HEADER ROW — four KPI cards                              │
+   │   Card 1: Total Applications   [Total Applications]      │
+   │   Card 2: Mean PD Score        [Mean PD %]               │
+   │   Card 3: High Risk Count      [High Risk Count]         │
+   │   Card 4: PSI Status           [PSI Status Label]        │
+   │            → conditional format colour [PSI Traffic Light]│
+   │                                                          │
+   │ ROW 2 — charts (left half + right half)                  │
+   │   LEFT:  Bar chart                                       │
+   │     X-axis: ScoreDecile (1–10)                           │
+   │     Y-axis: LoanCount                                    │
+   │     Colour by: RiskTier                                  │
+   │     Title: "Score decile distribution"                   │
+   │                                                          │
+   │   RIGHT: Donut chart                                     │
+   │     Legend: RiskTier                                     │
+   │     Values: TotalExposure (ALL)                          │
+   │     Title: "Exposure by risk tier"                       │
+   │                                                          │
+   │ ROW 3 — trend line + PSI line chart                      │
+   │   LEFT:  Line chart                                      │
+   │     X-axis: dim_Date[MonthName] (sorted by MonthSort)    │
+   │     Y-axis: [Avg PD Score], [PD Score 30d Avg]          │
+   │     Title: "Mean PD trend — 12 months"                   │
+   │                                                          │
+   │   RIGHT: Line chart with reference lines                 │
+   │     X-axis: mon_PSITrend[MonitorDate]                    │
+   │     Y-axis: PSI_Score                                    │
+   │     Reference line at 0.10 (amber), 0.25 (red)          │
+   │     Conditional colour: PSI Traffic Light                │
+   │     Title: "Population Stability Index"                  │
+   │                                                          │
+   │ BOTTOM — model indicator strip                           │
+   │   Text: Current champion version + AUC                   │
+   │   Measures: [Latest Champion AUC] [AUC vs Basel Minimum] │
+   │             [Days Since Last Retrain]                    │
+   └──────────────────────────────────────────────────────────┘
+
+
+   PAGE 2 — APPLICATION LOOKUP + SHAP
+   Connection mode: DirectQuery (dim_AppDetail)
+   ┌──────────────────────────────────────────────────────────┐
+   │ SEARCH BAR                                               │
+   │   Slicer (single value): dim_AppDetail[ApplicationID]    │
+   │   Style: Dropdown or Text input                          │
+   │                                                          │
+   │ SCORE CARD (top left)                                    │
+   │   Large number: [Selected PD Score] formatted as %       │
+   │   Sub-label:    [Selected Risk Tier]                     │
+   │   Background colour: [Score Card Colour]                 │
+   │   Decision box: [Decision Recommendation]                │
+   │                                                          │
+   │ WATERFALL CHART — SHAP top 5 reasons                     │
+   │   Category: Reason1_Feature → Reason5_Feature           │
+   │   Value:    Reason1_SHAP   → Reason5_SHAP               │
+   │   Colour:   Direction '+' = red, '-' = green             │
+   │   Title: "Why this score? (Top 5 drivers)"               │
+   │                                                          │
+   │   Implementation tip:                                    │
+   │   UNPIVOT the five reason columns into a mini-table      │
+   │   using Power Query M before charting:                   │
+   │                                                          │
+   │   = Table.UnpivotOtherColumns(                          │
+   │       Source,                                            │
+   │       {"ApplicationID","ScoreDate","PD_Score"},          │
+   │       "ReasonName", "SHAPValue" )                        │
+   │                                                          │
+   │ CONTEXT CARDS (bottom row)                               │
+   │   Card: Loan Amount    MAX(dim_AppDetail[LoanAmount])    │
+   │   Card: Annuity        MAX(dim_AppDetail[Annuity])       │
+   │   Card: Purpose        MAX(dim_AppDetail[PurposeCode])   │
+   │   Card: Client Income  MAX(dim_AppDetail[IncomeTotal])   │
+   └──────────────────────────────────────────────────────────┘
+
+
+   PAGE 3 — MODEL HEALTH (MLOps)
+   Connection mode: Import
+   ┌──────────────────────────────────────────────────────────┐
+   │ HEADER — four metric cards                               │
+   │   Card 1: AUC        [Latest Champion AUC]               │
+   │   Card 2: Gini       [Latest Gini]       + Basel check   │
+   │   Card 3: KS         [Latest KS]                         │
+   │   Card 4: Promotions [Total Champion Promotions]         │
+   │                                                          │
+   │ ROW 2 — AUC history + champion promotions                │
+   │   LEFT:  Line chart                                      │
+   │     X-axis: mon_ModelHealth[CycleDate]                   │
+   │     Lines:  ChampionAUC, ChallengerAUC                   │
+   │     Reference line at 0.70 (Basel AUC minimum)           │
+   │     Mark Promoted=TRUE points in a different colour      │
+   │     Title: "AUC trend — champion vs challenger"          │
+   │                                                          │
+   │   RIGHT: Line + columns combo                            │
+   │     Columns: PSI_Score (colour by PSI_Status)            │
+   │     Line:    Threshold references 0.10, 0.25             │
+   │     Title: "PSI history"                                 │
+   │                                                          │
+   │ ROW 3 — SHAP global importance + champion log table      │
+   │   LEFT:  Horizontal bar chart                            │
+   │     Category: FeatureName (sorted by ImportanceRank)     │
+   │     Value:    MeanAbsSHAP                                │
+   │     Colour:   MeanSHAP > 0 → red, < 0 → green           │
+   │     Title: "Global feature importance (SHAP)"           │
+   │                                                          │
+   │   RIGHT: Table                                           │
+   │     Columns: CycleDate, ChampionAUC, ChallengerAUC,     │
+   │              AUC_Delta, Promoted, CycleType              │
+   │     Conditional format: Promoted = green row fill        │
+   │     Title: "Champion/challenger log"                     │
+   └──────────────────────────────────────────────────────────┘
+
+
+   POWER QUERY M — UNPIVOT SHAP REASONS (for Page 2 waterfall)
+   In Power Query → dim_AppDetail → Add Custom Step:
+
+   let
+     Source = dim_AppDetail,
+     KeepCols = Table.SelectColumns(Source, {
+         "ApplicationID","ScoreDate","PD_Score","RiskTier"
+     }),
+     Reasons = Table.SelectColumns(Source, {
+         "ApplicationID",
+         "Reason1_Feature","Reason1_SHAP","Reason1_Dir",
+         "Reason2_Feature","Reason2_SHAP","Reason2_Dir",
+         "Reason3_Feature","Reason3_SHAP","Reason3_Dir",
+         "Reason4_Feature","Reason4_SHAP","Reason4_Dir",
+         "Reason5_Feature","Reason5_SHAP","Reason5_Dir"
+     }),
+     // Build a list of reason records
+     AddRank = Table.AddColumn(Reasons, "Reasons", each
+         {
+           [Rank=1, Feature=[Reason1_Feature], SHAP=[Reason1_SHAP], Dir=[Reason1_Dir]],
+           [Rank=2, Feature=[Reason2_Feature], SHAP=[Reason2_SHAP], Dir=[Reason2_Dir]],
+           [Rank=3, Feature=[Reason3_Feature], SHAP=[Reason3_SHAP], Dir=[Reason3_Dir]],
+           [Rank=4, Feature=[Reason4_Feature], SHAP=[Reason4_SHAP], Dir=[Reason4_Dir]],
+           [Rank=5, Feature=[Reason5_Feature], SHAP=[Reason5_SHAP], Dir=[Reason5_Dir]]
+         }
+     ),
+     Expanded = Table.ExpandListColumn(AddRank, "Reasons"),
+     Final    = Table.ExpandRecordColumn(Expanded, "Reasons",
+                    {"Rank","Feature","SHAP","Dir"})
+   in Final
+
+   ============================================================
+   END OF POWER BI SETUP
+   ============================================================ */

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#102b37" />
+    <title>Portfolio Intelligence · Credit Risk</title>
+    <link rel="stylesheet" href="/static/dashboard.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">PORTFOLIO INTELLIGENCE</p>
+          <h1>Decisions with context.</h1>
+          <p class="subtitle">Risk monitoring, model explanations, and responsible next-best actions.</p>
+        </div>
+        <div class="run">
+          <span class="live-dot" aria-hidden="true"></span>
+          <span id="run-state">Demo portfolio · ready</span>
+          <button id="run-pipeline">Run daily pipeline</button>
+        </div>
+      </header>
+      <section class="metrics" id="metrics" aria-label="Portfolio metrics"></section>
+      <section class="portfolio-visuals" id="portfolio-visuals" aria-label="Portfolio charts"></section>
+      <section class="workspace">
+        <aside class="clients-panel">
+          <div class="panel-heading"><div><p class="eyebrow">PRIORITY QUEUE</p><h2>Clients</h2></div><span id="client-count"></span></div>
+          <div class="filters">
+            <label class="sr-only" for="search">Search clients</label>
+            <input id="search" type="search" placeholder="Search client or segment" />
+            <label class="sr-only" for="risk-filter">Filter by risk tier</label>
+            <select id="risk-filter"><option value="">All tiers</option><option>CRITICAL</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option></select>
+          </div>
+          <div id="clients" class="client-list"></div>
+        </aside>
+        <section class="detail-panel" id="detail" aria-live="polite">
+          <div class="empty"><div class="empty-mark">↗</div><p class="eyebrow">CLIENT 360</p><h2>Select a client to explore their risk story.</h2><p>Review scores, model drivers, product holdings, and the action policy in one place.</p></div>
+        </section>
+      </section>
+    </main>
+    <script src="/static/dashboard.js"></script>
+  </body>
+</html>
