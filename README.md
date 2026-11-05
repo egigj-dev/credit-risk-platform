@@ -1,16 +1,13 @@
 # Credit Risk Platform
 
-A functional MVP combining the strongest capabilities of `credit_risk_final` and
-`credit_risk_etl_v2`:
+A credit-risk MVP that scores clients for probability of default (PD) and non-performing-loan early warning (NPL), recommends next-best offers (NBO), and exposes results through an API and an operator dashboard.
 
 - PostgreSQL 16 source staging, watermarking, validation, and a 131-feature store.
-- CatBoost probability-of-default scoring with PSI monitoring and SHAP explanations.
+- CatBoost PD scoring with PSI monitoring and SHAP explanations.
 - XGBoost NPL early-warning scoring, four risk tiers, watchlists, and SHAP output.
-- Trained next-best-offer recommendations with ownership, cold-start handling, PD
-  suppression, cooldowns, and CRM acceptance feedback.
-- Client 360, portfolio/reporting views, Power BI assets, pipeline audit/health APIs,
-  Swagger documentation, and a responsive operator dashboard.
-- A deterministic zero-service demo for quick UI evaluation.
+- Next-best-offer recommendations with ownership, cold-start handling, PD suppression, cooldowns, and CRM acceptance feedback.
+- Client 360, portfolio and reporting views, Power BI assets, pipeline audit and health APIs, Swagger documentation, and a responsive dashboard.
+- A deterministic demo with generated clients, which needs no database, data or trained models.
 
 ## Quick UI demo
 
@@ -61,6 +58,17 @@ different client population.
 
 Use `credit-risk-model` for individual PD/NPL/NBO train, evaluate, or score operations.
 See [the production runbook](docs/production.md) for operations and verification.
+
+## Testing
+
+```bash
+.venv/bin/pip install -e '.[dev]'
+make test
+```
+
+## What this repository contains
+
+The demo mode and its tests run from a fresh clone. Demo clients and scores are generated, and are not model output. The full platform needs a PostgreSQL database, the source dataset, and trained model artifacts, none of which are in Git, and model performance figures are not published here.
 
 ## Documentation
 

@@ -16,7 +16,7 @@ install-production:
 	.venv/bin/python scripts/install_production.py
 
 demo:
-	APP_MODE=demo .venv/bin/uvicorn credit_risk.api.main:app --host 0.0.0.0 --port 8002 --reload
+	APP_MODE=demo .venv/bin/uvicorn credit_risk.api.main:app --host 127.0.0.1 --port 8002 --reload
 
 production:
 	APP_MODE=database .venv/bin/uvicorn credit_risk.api.production_main:app --host 0.0.0.0 --port 8002
